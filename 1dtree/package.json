@@ -1,16 +1,16 @@
 {
-  "name": "Trix",
+  "name": "1dtree",
   "version": "0.0.1",
-  "description": "Trix",
-  "main": "trix.js",
+  "description": "1dtree",
+  "main": "src/1dtree.js",
   "directories": {
     "test": "test"
   },
   "devDependencies": {
     "chai": "^3.5.0",
+    "gulp": "^3.9.1",
     "gulp-shell": "^0.5.2",
     "mocha": "^2.4.5",
-    "rewire": "^2.5.1",
     "tap": "~0.4.8",
     "tape": "~2.3.2"
   },
