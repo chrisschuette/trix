@@ -1,7 +1,7 @@
 'use strict';
 
 var winston = require('winston');
-winston.level = 'warning';
+winston.level = 'warn';
 
 /**
  * A node in the interval tree.

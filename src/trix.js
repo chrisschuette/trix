@@ -123,12 +123,14 @@ function SegmentCrossing(horizontal, vertical) {
  */
 function Vertex(segment, position, orientation, direction) {
     this.segment = segment
-    if (orientation === VertexOrientation.OUTGOING) {
-        this.segment.start = this;
-    } else if (orientation === VertexOrientation.INCOMING) {
-        this.segment.end = this;
-    } else {
-        fail("Invalid orientation.")
+    if (segment) {
+        if (orientation === VertexOrientation.OUTGOING) {
+            this.segment.start = this;
+        } else if (orientation === VertexOrientation.INCOMING) {
+            this.segment.end = this;
+        } else {
+            fail("Invalid orientation.")
+        }
     }
     this[0] = position[0]
     this[1] = position[1]
@@ -435,7 +437,7 @@ function getDiagonals(direction, concaves, tree) {
 
             if (findIntersections(direction, a, b, tree))
                 continue;
-            // We should probably install two here?
+
             var diagonal = new Segment(a, b);
             winston.info('Found diagonal: ', a[0], a[1], ' => ', b[0], b[1])
             diagonals.push(diagonal);
@@ -482,16 +484,16 @@ function selectDiagonals(horizontalDiagonals, verticalDiagonals) {
         return [c.horizontal.id, c.vertical.id]
     })
 
-    winston.info('crossings:')
+/*    winston.info('crossings:')
     crossingIds.forEach(function(crossing) {
-      winston.info(crossing[0]+1+verticalDiagonals.length, crossing[1]+1);
-    });
+        winston.info(crossing[0] + 1 + verticalDiagonals.length, crossing[1] + 1);
+    });*/
 
     //Find independent set
     var selectedIds = bipartiteIndependentSet(horizontalDiagonals.length,
-            verticalDiagonals.length, crossingIds)
+        verticalDiagonals.length, crossingIds)
 
-    winston.info('selected: ' + JSON.stringify(selectedIds))
+//    winston.info('selected: ' + JSON.stringify(selectedIds))
 
     //Convert into result format
     var selected = new Array(selectedIds[0].length + selectedIds[1].length)
@@ -508,10 +510,8 @@ function selectDiagonals(horizontalDiagonals, verticalDiagonals) {
 }
 
 /**
- * @param {ndarray} array
- * @returns {}
  */
-function getContours(array) {
+function preprocess(array) {
     // Extract horizontal segments and vertices.
     var hsegments = scanForHSegments(array)
     var hvertices = getVertices(hsegments)
@@ -564,6 +564,23 @@ function getContours(array) {
                 concaves.push(vvertex)
         }
     }
+    return {
+      hsegments: hsegments,
+      vsegments: vsegments,
+      concaves: concaves
+    };
+}
+
+/**
+ * @param {ndarray} array
+ * @returns {}
+ */
+function getContours(array) {
+    // Preprocess bitmap.
+    var pre = preprocess(array);
+    var hsegments = pre.hsegments;
+    var vsegments = pre.vsegments;
+    var concaves = pre.concaves;
 
     // Build interval trees for horizontal and vertical segments.
     var htree = createIntervalTree(hsegments)
@@ -576,15 +593,123 @@ function getContours(array) {
     // Select maximal set of non-crossing diagonals.
     var selectedDiagonals = selectDiagonals(hdiagonals, vdiagonals);
 
-    //Unwrap loops
-    var loops = []
-    for (var i = 0; i < hsegments.length; ++i) {
-        var hsegment = hsegments[i]
-        if (!hsegment.visited) {
-            loops.push(walk(hsegment))
+    // Split segments
+    selectedDiagonals.forEach(function(segment) {
+        splitSegment(segment, hsegments, vsegments);
+    });
+
+    // Update the interval trees.
+    // TODO(cschuet): Find a more efficient way.
+    htree = createIntervalTree(hsegments)
+    vtree = createIntervalTree(vsegments)
+
+    // Find the remaining concave vertices and split them
+    concaves.forEach(function(vertex) {
+        if (vertex.concave) {
+            splitConcave(vertex, htree, vtree);
         }
+    });
+}
+
+function findIntersectingSegment(vertex, htree, vtree) {
+    assert(vertex.segment.start === vertex)
+    var direction = vertex.segment.direction;
+    var tree = direction === SegmentDirection.HORIZONTAL ? vtree : htree;
+    var intersectingSegment = null;
+    if (vertex.direction === VertexDirection.POSITIVE) {
+        tree.queryPoint(vertex[direction ^ 1], function(segment) {
+            if (segment.start[direction] < vertex[direction]) {
+                if (!intersectingSegment ||
+                    intersectingSegment.start[direction] <
+                    segment.start[direction]) {
+                    intersectingSegment = segment;
+                }
+            }
+        });
+    } else {
+        tree.queryPoint(vertex[direction ^ 1], function(segment) {
+            if (segment.start[direction] > vertex[direction]) {
+                if (!intersectingSegment ||
+                    intersectingSegment.start[direction] >
+                    segment.start[direction]) {
+                    intersectingSegment = segment;
+                }
+            }
+        });
     }
-    return loops;
+    assert(intersectingSegment !== null);
+    /*winston.info('intersecting segment: ',
+        intersectingSegment.start[0], intersectingSegment.start[1],
+        ' => ', intersectingSegment.end[0], intersectingSegment.end[1]);*/
+    return intersectingSegment
+}
+
+function splitConcave(vertex, htree, vtree) {
+    //winston.info('splitting vertex ', vertex[0], vertex[1])
+    var intersectingSegment = findIntersectingSegment(vertex, htree, vtree)
+    return intersectingSegment;
+}
+
+function getVertexDirection(segment) {
+    assert(segment.end[segment.direction] !== segment.start[segment.direction]);
+    return segment.end[segment.direction] - segment.start[segment.direction] > 0 ?
+        VertexDirection.POSITIVE :
+        VertexDirection.NEGATIVE;
+}
+
+function splitSegment(segment, hsegments, vsegments) {
+    winston.info('Splitting: ', segment.start[0], segment.start[1], ' => ',
+        segment.end[0], segment.end[1])
+    var va = segment.start
+    var vb = segment.end
+    var sa = va.segment
+    var sb = vb.segment
+    assert(sa != segment)
+    assert(sb != segment)
+    var spa = sa.prev
+    var spb = sb.prev
+
+    var sab = segment;
+    var sba = new Segment(vb, va);
+
+    // wire them up!
+    spa.next = sab
+    sab.prev = spa
+
+    sab.next = sb
+    sb.prev = sab
+
+    spb.next = sba
+    sba.prev = spb
+
+    sba.next = sa
+    sa.prev = sba
+
+    var vertexDirection = getVertexDirection(sab)
+    var vA = new Vertex(sab, [va[0], va[1]], VertexOrientation.OUTGOING,
+        vertexDirection)
+
+    var vB = new Vertex(sba, [vb[0], vb[1]], VertexOrientation.OUTGOING,
+        vertexDirection ^ 1)
+
+    vA.concave = false;
+    vB.concave = false;
+    va.concave = false;
+    vb.concave = false;
+
+    assert(sab.direction === SegmentDirection.HORIZONTAL ||
+        sab.direction === SegmentDirection.VERTICAL)
+    assert(sba.direction === SegmentDirection.HORIZONTAL ||
+        sba.direction === SegmentDirection.VERTICAL)
+
+    // Add new segment to list.
+    if (sab.direction === SegmentDirection.HORIZONTAL) {
+        hsegments.push(sab);
+        hsegments.push(sba);
+    } else {
+        vsegments.push(sab);
+        vsegments.push(sba);
+    }
 }
 
 module.exports = {
@@ -594,7 +719,6 @@ module.exports = {
     'VertexDirection': VertexDirection,
     'compareHVertices': compareHVertices,
     'compareVVertices': compareVVertices,
-    'getContours': getContours,
     'getVertices': getVertices,
     'scanForHSegments': scanForHSegments,
     'scanForVSegments': scanForVSegments,

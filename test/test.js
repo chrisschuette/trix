@@ -6,12 +6,16 @@ var winston = require('winston');
 winston.level = 'debug';
 
 var trix = rewire('../src/trix.js');
+var createIntervalTree = trix.__get__('createIntervalTree');
 var findCrossings = trix.__get__('findCrossings')
 var getContours = trix.__get__('getContours');
+var getVertexDirection = trix.__get__('getVertexDirection');
 var getVertices = trix.__get__('getVertices');
+var preprocess = trix.__get__('preprocess');
 var scanForHSegments = trix.__get__('scanForHSegments');
 var scanForVSegments = trix.__get__('scanForVSegments');
 var selectDiagonals = trix.__get__('selectDiagonals');
+var splitConcave = trix.__get__('splitConcave');
 var Segment = trix.__get__('Segment');
 var Vertex = trix.__get__('Vertex');
 var VertexDirection = trix.__get__('VertexDirection');
@@ -161,17 +165,17 @@ function print(array) {
     }
 }
 
-describe('getContours()', function() {
-    function checkContours(array, expectedLoopCount) {}
+function getConcaveVertexCount(loops) {
+    return [].concat.apply([], loops).reduce(function(count, vertex) {
+        if (vertex.concave) {
+            winston.info('concave:', vertex[0], vertex[1])
+            return count + 1;
+        }
+        return count;
+    }, 0);
+}
 
-    function getConcaveVertexCount(loops) {
-        return [].concat.apply([], loops).reduce(function(count, vertex) {
-            if (vertex.concave)
-                return count + 1;
-            return count;
-        }, 0);
-    }
-
+describe('preprocess()', function() {
     var testCases = [{
         pixels: [
             1, 0, 1, 0,
@@ -260,50 +264,62 @@ describe('getContours()', function() {
         loops: 1,
         concave: 1
     }];
+
+    function unwrapLoops(hsegments) {
+        //Unwrap loops
+        var loops = []
+        for (var i = 0; i < hsegments.length; ++i) {
+            var hsegment = hsegments[i]
+            if (!hsegment.visited) {
+                loops.push(walk(hsegment))
+            }
+        }
+        return loops;
+    }
+
     testCases.forEach(function(testCase, index) {
         var array = ndarray(new Int8Array(testCase.pixels), testCase.dimensions);
-        /*        if (testCase.loops !== undefined)
-                    it('should return ' + testCase.loops +
-                        ' loops for test case #' + index + '.', function() {
-                            var loops = getContours(array);
-                            expect(loops.length).to.equal(testCase.loops);
-                        });*/
+        var pre = preprocess(array);
+
+        if (testCase.loops !== undefined)
+            it('should return ' + testCase.loops +
+                ' loops for test case #' + index + '.', function() {
+                    var loops = unwrapLoops(pre.hsegments);
+                    expect(loops.length).to.equal(testCase.loops);
+                });
         if (testCase.concave !== undefined)
             it('should find ' + testCase.concave + ' concave vertices',
                 function() {
-                    print(array)
-                    var concaveCount = getConcaveVertexCount(getContours(array));
-                    expect(concaveCount).to.equal(testCase.concave);
+                    expect(pre.concaves.length).to.equal(testCase.concave);
                 });
-        /*        it('should have same # of concave vertices as transposed array',
-                    function() {
-                        var concaveCount = getConcaveVertexCount(getContours(array));
-                        expect(getConcaveVertexCount(getContours(array)))
-                            .to.equal(
-                                getConcaveVertexCount(getContours(array.transpose())));
-                    });*/
+        it('should have same # of concave vertices as transposed array',
+            function() {
+                expect(pre.concaves.length)
+                    .to.equal(
+                        preprocess(array.transpose()).concaves.length);
+            });
     });
 });
 
 describe('findCrossings()', function() {
-  
-  /* 0 1 2 3 4 5 6
-     ------------->
-   0|0 0 0 0 0 0 0
-    |            
-   1|0 >-V-< 0 0 0
-    |    |       
-   2|0 >-X-------<
-    |    |
-   3|0 0 ^ 0 0 V 0
-    |          |
-   4|0 >-----< | 0
-    |          |
-   5|0 >-------X-<
-    |          |
-   6|0 0 0 0 0 ^ 0
-    V
-  */
+
+    /* 0 1 2 3 4 5 6
+       ------------->
+     0|0 0 0 0 0 0 0
+      |            
+     1|0 >-V-< 0 0 0
+      |    |       
+     2|0 >-X-------<
+      |    |
+     3|0 0 ^ 0 0 V 0
+      |          |
+     4|0 >-----< | 0
+      |          |
+     5|0 >-------X-<
+      |          |
+     6|0 0 0 0 0 ^ 0
+      V
+    */
 
     var horizontalDiagonals = [
         new Segment([1, 1], [3, 1]),
@@ -351,14 +367,40 @@ describe('selectDiagonal()', function() {
         new Segment([7, 4], [7, 6]),
         new Segment([5, 3], [5, 8])
     ];
-    it('', function() {
-      var selectedDiagonals = selectDiagonals(horizontalDiagonals, verticalDiagonals)
-      expect(selectedDiagonals).to.deep.equal([
-        horizontalDiagonals[0],
-        horizontalDiagonals[2],
-        horizontalDiagonals[3],
-        verticalDiagonals[0],
-        verticalDiagonals[2]
-      ])
+    it('should select the maximum independent set', function() {
+        var selectedDiagonals = selectDiagonals(
+            horizontalDiagonals, verticalDiagonals)
+        expect(selectedDiagonals).to.deep.equal([
+            horizontalDiagonals[0],
+            horizontalDiagonals[2],
+            horizontalDiagonals[3],
+            verticalDiagonals[0],
+            verticalDiagonals[2]
+        ])
+    });
+});
+
+describe('splitConcave()', function() {
+    function createSegment(start, end) {
+        var segment = new Segment(start, end);
+        var vertexDirection = getVertexDirection(segment);
+        var vStart = new Vertex(segment, start, VertexOrientation.OUTGOING,
+            vertexDirection);
+        var vEnd = new Vertex(segment, end, VertexOrientation.INCOMING,
+            vertexDirection);
+        return segment;
+    }
+
+    var s = createSegment([5, 2], [7, 2]);
+    var vsegments = [
+        createSegment([1, 1], [1, 4]),
+        createSegment([2, 1], [2, 4]), /***/
+        createSegment([3, 3], [3, 4]),
+        createSegment([6, 1], [6, 4])
+    ];
+    it('should find the right intersecting segment', function() {
+        var intersectingSegment = splitConcave(s.start, null,
+            createIntervalTree(vsegments));
+        expect(intersectingSegment).to.equal(vsegments[1]);
     });
 });
