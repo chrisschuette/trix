@@ -31,6 +31,29 @@ describe('Empty interval tree.', function() {
     });
 });
 
+describe('Same interval twice', function() {
+
+    var intervals = [{
+        0: -1,
+        1: 1,
+        intervalId: 0
+    }, {
+        0: -1,
+        1: 1,
+        intervalId: 1
+    }];
+    var expectedIntervalIds = [0, 1];
+    it('should return ' + JSON.stringify(intervals), function() {
+        var tree = createIntervalTree(intervals);
+        tree.queryPoint(0, function(interval) {
+            var index = expectedIntervalIds.indexOf(interval.intervalId);
+            expect(index).to.be.above(-1);
+            expectedIntervalIds.splice(index, 1);
+        });
+        expect(expectedIntervalIds.length).to.be.equal(0);
+    });
+});
+
 describe('1 interval, point contained', function() {
     var expected = [
         [-1, 1]

@@ -1,5 +1,8 @@
 'use strict';
 
+var winston = require('winston');
+winston.level = 'warning';
+
 /**
  * A node in the interval tree.
  * @constructor
@@ -121,6 +124,9 @@ function createIntervalTree(intervals) {
     var rightPoints = midIntervals.slice();
     leftPoints.sort(compareBegin);
     rightPoints.sort(compareEnd);
+
+    winston.info('Successfully added ' + intervals.length +
+        ' interval(s) to the tree.');
 
     return new Node(mid,
         createIntervalTree(leftIntervals),

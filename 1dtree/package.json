@@ -12,7 +12,8 @@
     "gulp-shell": "^0.5.2",
     "mocha": "^2.4.5",
     "tap": "~0.4.8",
-    "tape": "~2.3.2"
+    "tape": "~2.3.2",
+    "winston": "^2.2.0"
   },
   "scripts": {
     "test": "mocha test --require test/helpers/chai.js --reporter spec"

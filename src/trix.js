@@ -1,7 +1,10 @@
 "use strict"
 
 var ndarray = require("ndarray")
+var bipartiteIndependentSet = require("bipartite-independent-set")
 var createIntervalTree = require("../1dtree/src/1dtree")
+var winston = require('winston');
+winston.level = 'debug';
 
 /**
  * Simple assert function. If condition is not met, message is thrown.
@@ -53,6 +56,19 @@ const VertexDirection = {
 };
 
 /**
+ * Enum for the segment direction.
+ * @readonly
+ * @enum {Number}
+ */
+const SegmentDirection = {
+    /** Segment with horizontal direction */
+    HORIZONTAL: 0,
+
+    /** Segment with vertical direction */
+    VERTICAL: 1
+};
+
+/**
  * Represents an edge connecting two vertices. Must be axis-parallel.
  * @constructor
  * @param {Vertex} start Source vertex.
@@ -67,6 +83,7 @@ function Segment(start, end) {
             this[0] = end[0]
             this[1] = start[0]
         }
+        this.direction = SegmentDirection.HORIZONTAL;
     } else if (start[0] === end[0]) { // vertical
         if (start[1] < end[1]) {
             this[0] = start[1]
@@ -75,6 +92,7 @@ function Segment(start, end) {
             this[0] = end[1]
             this[1] = start[1]
         }
+        this.direction = SegmentDirection.VERTICAL;
     } else {
         fail("Not an axis-parallel segment.")
     }
@@ -83,6 +101,16 @@ function Segment(start, end) {
     this.visited = false
     this.next = null
     this.prev = null
+}
+
+/**
+ * @constructor
+ * @param {Segment} horizontal horizontal segment
+ * @param {Segment} vertical vertical segment
+ */
+function SegmentCrossing(horizontal, vertical) {
+    this.horizontal = horizontal;
+    this.vertical = vertical;
 }
 
 /**
@@ -180,7 +208,7 @@ function compareVVertices(a, b) {
 }
 
 /**
- * @param {Segments[]} segments Array of segments to extract the vertices from.
+ * @param {Segment[]} segments Array of segments to extract the vertices from.
  * @returns {Vertex[]}
  */
 function getVertices(segments) {
@@ -374,6 +402,111 @@ function scanForHSegments(array) {
     return segments;
 }
 
+function findIntersections(direction, a, b, tree) {
+    var c = a[direction]
+    var d = b[direction]
+    return !!tree.queryPoint(a[direction ^ 1], function(s) {
+        var x = s.start[direction]
+        if (c < x && x < d) {
+            return true
+        }
+        return false
+    })
+}
+
+function getDiagonals(direction, concaves, tree) {
+    concaves.sort(function(a, b) {
+        var d = a[direction ^ 1] - b[direction ^ 1]
+        if (d) {
+            return d
+        }
+        return a[direction] - b[direction]
+    })
+    var diagonals = []
+    for (var i = 1; i < concaves.length; ++i) {
+        var a = concaves[i - 1]
+        var b = concaves[i]
+        assert(a.segment.start === a)
+        if (a[direction ^ 1] === b[direction ^ 1]) {
+            if (a.segment.end[0] === b[0] && a.segment.end[1] === b[1])
+                continue;
+            if (a.segment.prev.start === b)
+                continue;
+
+            if (findIntersections(direction, a, b, tree))
+                continue;
+            // We should probably install two here?
+            var diagonal = new Segment(a, b);
+            winston.info('Found diagonal: ', a[0], a[1], ' => ', b[0], b[1])
+            diagonals.push(diagonal);
+        }
+    }
+    return diagonals;
+}
+
+/**
+ * @param{Segment[]} horizontalDiagonals horizontal diagonals
+ * @param{Segment[]} verticalDiagonals vertical diagonals
+ * @returns {SegmentCrossing[]} all crossings
+ */
+function findCrossings(horizontalDiagonals, verticalDiagonals) {
+    var crossingDiagonals = [];
+    if (horizontalDiagonals.length === 0)
+        return crossingDiagonals;
+    var htree = createIntervalTree(horizontalDiagonals)
+    for (var i = 0; i < verticalDiagonals.length; ++i) {
+        var verticalDiagonal = verticalDiagonals[i]
+        assert(verticalDiagonal.start[0] === verticalDiagonal.end[0])
+        htree.queryPoint(verticalDiagonal.start[0],
+            function(horizontalDiagonal) {
+                if (horizontalDiagonal.start[1] < verticalDiagonal[1] &&
+                    verticalDiagonal[0] < horizontalDiagonal.start[1])
+                    crossingDiagonals.push(
+                        new SegmentCrossing(horizontalDiagonal,
+                            verticalDiagonal));
+            });
+    }
+    return crossingDiagonals;
+}
+
+function selectDiagonals(horizontalDiagonals, verticalDiagonals) {
+    var crossings = findCrossings(horizontalDiagonals, verticalDiagonals);
+
+    for (var i = 0; i < horizontalDiagonals.length; ++i) {
+        horizontalDiagonals[i].id = i
+    }
+    for (var i = 0; i < verticalDiagonals.length; ++i) {
+        verticalDiagonals[i].id = i
+    }
+    var crossingIds = crossings.map(function(c) {
+        return [c.horizontal.id, c.vertical.id]
+    })
+
+    winston.info('crossings:')
+    crossingIds.forEach(function(crossing) {
+      winston.info(crossing[0]+1+verticalDiagonals.length, crossing[1]+1);
+    });
+
+    //Find independent set
+    var selectedIds = bipartiteIndependentSet(horizontalDiagonals.length,
+            verticalDiagonals.length, crossingIds)
+
+    winston.info('selected: ' + JSON.stringify(selectedIds))
+
+    //Convert into result format
+    var selected = new Array(selectedIds[0].length + selectedIds[1].length)
+    var ptr = 0
+    for (var i = 0; i < selectedIds[0].length; ++i) {
+        selected[ptr++] = horizontalDiagonals[selectedIds[0][i]]
+    }
+    for (var i = 0; i < selectedIds[1].length; ++i) {
+        selected[ptr++] = verticalDiagonals[selectedIds[1][i]]
+    }
+
+    //Done
+    return selected;
+}
+
 /**
  * @param {ndarray} array
  * @returns {}
@@ -387,6 +520,9 @@ function getContours(array) {
     var vsegments = scanForVSegments(array)
     var vvertices = getVertices(vsegments)
 
+    assert(hvertices.length === vvertices.length)
+    assert(2 * hsegments.length === hvertices.length)
+
     // Sort vertices.
     hvertices.sort(compareHVertices)
     vvertices.sort(compareVVertices)
@@ -394,33 +530,51 @@ function getContours(array) {
     // Glue horizontal and vertical vertices together
     // and mark concave vertices.
     var nvertices = hvertices.length
+    var concaves = []
     for (var i = 0; i < nvertices; ++i) {
         var hvertex = hvertices[i]
         var vvertex = vvertices[i]
         if (hvertex.orientation === VertexOrientation.OUTGOING) {
             // o-->  v.  <--o
+            assert(hvertex.segment.start === hvertex)
+            assert(vvertex.segment.end === vvertex)
+            assert(vvertex[0] === hvertex[0] && hvertex[1] === vvertex[1])
+
             hvertex.segment.prev = vvertex.segment
             vvertex.segment.next = hvertex.segment
-            if (hvertex.direction === vvertex.direction) {
-                hvertex.concave = true;
-            } else {
-                hvertex.concave = false;
-            }
+            vvertex.concave = hvertex.concave =
+                hvertex.direction === vvertex.direction
+            if (hvertex.concave)
+                concaves.push(hvertex)
         } else {
             // ^      o
             // |  v.  |
             // o      v
+            assert(vvertex.segment.start === vvertex)
+            assert(hvertex.segment.end === hvertex)
+            assert(vvertex[0] === hvertex[0] && hvertex[1] === vvertex[1])
             assert(vvertex.orientation === VertexOrientation.OUTGOING,
                 "Vertex at start of vertical segment expected.")
+
             hvertex.segment.next = vvertex.segment
             vvertex.segment.prev = hvertex.segment
-            if (hvertex.direction !== vvertex.direction) {
-                vvertex.concave = true;
-            } else {
-                vvertex.concave = false;
-            }
+            vvertex.concave = hvertex.concave =
+                hvertex.direction !== vvertex.direction
+            if (vvertex.concave)
+                concaves.push(vvertex)
         }
     }
+
+    // Build interval trees for horizontal and vertical segments.
+    var htree = createIntervalTree(hsegments)
+    var vtree = createIntervalTree(vsegments)
+
+    //Find horizontal and vertical diagonals
+    var hdiagonals = getDiagonals(SegmentDirection.HORIZONTAL, concaves, vtree);
+    var vdiagonals = getDiagonals(SegmentDirection.VERTICAL, concaves, htree);
+
+    // Select maximal set of non-crossing diagonals.
+    var selectedDiagonals = selectDiagonals(hdiagonals, vdiagonals);
 
     //Unwrap loops
     var loops = []
